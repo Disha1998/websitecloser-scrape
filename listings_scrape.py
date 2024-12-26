@@ -1,84 +1,81 @@
-import httpx
-from selectolax.parser import HTMLParser
+import asyncio
+from typing import List
+from httpx import AsyncClient
 import json
 import os
-import asyncio
+from selectolax.parser import HTMLParser
 
-
-async def fetch_page(url, client):
-    """Fetch a single page asynchronously."""
-    try:
-        response = await client.get(url)
-        print(f"Response Status Code for {url}: {response.status_code}")
-        if response.status_code == 200:
-            return response.text
-        else:
-            print(f"Failed to fetch {url}. Status Code: {response.status_code}")
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
-    return None
-
+# Number of retries for failed requests
+MAX_RETRIES = 3
 
 async def scrape_listings():
+    """
+    Scrape all listing URLs from the website with asynchronous requests.
+    """
     base_url = "https://www.websiteclosers.com/businesses-for-sale/"
-    urls = []
     page_number = 1
+    urls = []
 
-    async with httpx.AsyncClient() as client:
-        while True:
-            print(f"Scraping page {page_number}...")
-            # Generate URL for the current page
-            url = base_url if page_number == 1 else f"{base_url}page/{page_number}/"
-            html_content = await fetch_page(url, client)
+    while True:
+        print(f"Scraping page {page_number}...")
 
-            if not html_content:
-                print(f"Page {page_number} not found or no more pages. Stopping pagination.")
-                break
+        # Construct URL for pagination
+        url = base_url if page_number == 1 else f"{base_url}page/{page_number}/"
 
-            # Parse the HTML response
-            html = HTMLParser(html_content)
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Send GET request with retries
+                async with AsyncClient() as client:
+                    response = await client.get(url, timeout=10)
+                    if response.status_code == 200:
+                        print(f"Successfully fetched page {page_number}")
+                        break
+                    else:
+                        print(f"Failed to fetch page {page_number}. Status: {response.status_code}")
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(1)  # Wait before retrying
+        else:
+            print(f"Max retries reached for page {page_number}. Stopping pagination.")
+            break
 
-            # Find all listing divs
-            listings = html.css("div.post_item")
-            if not listings:
-                print(f"No listings found on page {page_number}. Ending scraping.")
-                break
+        # Parse response using Selectolax
+        html = HTMLParser(response.text)
+        listings = html.css("div.post_item")
 
-            # Extract URLs
-            for listing in listings:
-                link_node = listing.css_first("a.post_thumbnail")
-                link = link_node.attributes.get("href") if link_node and "href" in link_node.attributes else None
-                if link and link not in urls:
-                    urls.append(link)
+        if not listings:
+            print("No more listings found. Exiting...")
+            break
 
-            print(f"Found {len(listings)} listings on page {page_number}.")
-            page_number += 1
+        # Extract URLs from the current page
+        for listing in listings:
+            link_node = listing.css_first("a.post_thumbnail")
+            link = link_node.attributes.get("href") if link_node else None
+            if link and link not in urls:
+                urls.append(link)
 
-    # Save all URLs to JSON
-    save_to_json(urls)
-    print(f"Scraped {len(urls)} total listings across all pages.")
-    print("Scraped URLs saved to 'listings_with_pagination.json'.")
+        print(f"Found {len(listings)} listings on page {page_number}.")
+        page_number += 1  # Increment page number
 
+    # Save URLs to JSON
+    save_to_json(urls, "listings.json")
+    print(f"Scraped {len(urls)} total listings saved to 'listings.json'.")
 
-def save_to_json(urls):
-    file_path = "listings_with_pagination.json"
-
-    # Read existing URLs if the file exists
-    existing_urls = set()
+def save_to_json(data: List[str], file_path: str):
+    """
+    Save data to a JSON file.
+    """
     if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as jsonfile:
-            existing_urls = set(json.load(jsonfile))
+        with open(file_path, "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+    else:
+        existing_data = []
 
-    # Merge new URLs with existing ones
-    new_urls = [url for url in urls if url not in existing_urls]
-    all_urls = list(existing_urls | set(new_urls))
+    new_data = list(set(data) - set(existing_data))  # Avoid duplicates
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(existing_data + new_data, f, ensure_ascii=False, indent=4)
 
-    # Write all URLs to the JSON file
-    with open(file_path, "w", encoding="utf-8") as jsonfile:
-        json.dump(all_urls, jsonfile, indent=4)
-
-    print(f"Appended {len(new_urls)} new listings to the JSON file. Total listings now: {len(all_urls)}.")
-
+    print(f"Saved {len(new_data)} new listings to {file_path}.")
 
 if __name__ == "__main__":
     asyncio.run(scrape_listings())
