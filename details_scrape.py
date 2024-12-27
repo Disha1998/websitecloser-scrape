@@ -1,27 +1,29 @@
 import asyncio
 from typing import List
-from httpx import AsyncClient
+from httpx import AsyncClient, AsyncHTTPTransport
 from selectolax.parser import HTMLParser
 import json
+from dotenv import load_dotenv
+import os
 
-# Number of retries for failed requests
-MAX_RETRIES = 3
+# Load .env variables
+load_dotenv()
+PROXY_URL = os.getenv("PROXY_URL")
+MAX_RETRIES = 3  # Number of retries for failed requests
 
 async def scrape_all_details():
     """
     Scrape details for all listings from the JSON file.
     """
-    # Input and output files
     input_file = "listings.json"
     output_file = "details.json"
 
     # Load URLs from the JSON file
-    if not input_file:
+    if not os.path.exists(input_file):
         raise FileNotFoundError(f"{input_file} not found. Run 'listings_scrape.py' first.")
     with open(input_file, "r", encoding="utf-8") as f:
         urls = json.load(f)
 
-    # List to store all scraped details
     scraped_details = []
 
     # Scrape details for each URL
@@ -30,8 +32,9 @@ async def scrape_all_details():
 
         for attempt in range(MAX_RETRIES):
             try:
-                # Send GET request
-                async with AsyncClient() as client:
+                # Set up proxy transport
+                transport = AsyncHTTPTransport(proxy=PROXY_URL)
+                async with AsyncClient(transport=transport) as client:
                     response = await client.get(url, timeout=10)
                     if response.status_code == 200:
                         print(f"Successfully fetched details for {url}")
@@ -45,13 +48,11 @@ async def scrape_all_details():
             print(f"Max retries reached for {url}. Skipping...")
             continue
 
-        # Parse the HTML response
         html = HTMLParser(response.text)
         details = extract_details(html, url)
         if details:
             scraped_details.append(details)
 
-    # Save details to JSON
     save_to_json(scraped_details, output_file)
     print(f"Scraped details for {len(scraped_details)} listings saved to '{output_file}'.")
 
